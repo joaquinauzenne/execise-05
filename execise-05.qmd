@@ -1,0 +1,432 @@
+---
+title: "exercise-05"
+format: html
+editor: visual
+---
+
+# **Generate Sampling Distributions and CIs**
+
+Exercise 05 - Joaquin Auzenne - JJA3228 - ANT 388
+
+## **Learning Objectives**
+
+-   Generating sampling distributions by simulation
+
+-   Calculating standard errors
+
+-   Plotting with {ggplot2}
+
+-   Examining the distributions of variables
+
+-   Bootstrapping to derive a CI
+
+### Challenge 1
+
+*Preliminaries*
+
+```{r}
+# Packages
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(purrr)
+
+# Step 1
+# Loading Data
+
+d <- read_csv("https://raw.githubusercontent.com/difiore/ada-datasets/main/IMDB-movies.csv")
+d <- tibble::tibble(d)
+View(d)
+```
+
+```{r}
+# Step 2
+# Filtering by Runtime and Year
+
+f <- d |>
+  filter( between(startYear, 1920, 1979), between(runtimeMinutes, 60, 180)) |>
+  mutate(decade = paste0(((startYear - 1900) %/% 10) * 10, "s"))
+
+View(f)
+```
+
+*Histograms*
+
+```{r}
+# Step 3
+# {ggplot2} histograms
+
+plot <- ggplot(data = f, mapping = aes( x = runtimeMinutes)) +
+  geom_histogram(binwidth = 10, fill = "steelblue", color = "white") +
+  facet_wrap(~decade, nrow = 2) +
+  labs(title = "Distribution of Movie Runtimes by Decade (1920s - 1970s",
+       x = "Runtime (minutes)",
+       y = "Number of Movies") +
+  theme_minimal() +
+  scale_x_continuous(breaks = seq(60, 180, 30))
+
+plot
+```
+
+*Population and Sample Statistics*
+
+```{r}
+# Step 4
+# Population Mean and Standard Deviation
+
+results <- f |> 
+  group_by(decade) |>
+  mutate(
+    pop_mean = mean(runtimeMinutes),
+    pop_sd = sd(runtimeMinutes)
+  )
+View(results)
+
+# Step 5
+# Sample Mean and Standad Deviation
+
+decade_stats <- results |>
+  group_by(decade) |>
+  slice_sample(n = 100, replace = FALSE) |>
+  summarize(
+    sample_mean = mean(runtimeMinutes),
+    sample_sd = sd(runtimeMinutes)
+  ) |>
+  arrange(decade)
+
+decade_stats
+
+# Step 6
+# Standard Error for Samples
+
+decade_stats <- decade_stats |>
+  mutate(standard_error = sqrt(sample_sd)/10)
+  
+decade_stats
+
+# Step 7
+# Sample Mean vs Population Mean
+
+pop_param <- results |>
+  group_by(decade) |>
+  summarize(
+    pop_mean, pop_sd,
+  ) |> mutate(true_se = pop_sd / 10)
+
+pop_param
+
+comparison <- decade_stats |>
+  left_join(pop_param, by = "decade") |>
+  mutate(
+    mean_error = sample_mean - pop_mean,
+    sd_ratio = sample_sd / pop_sd,
+    se_ratio = standard_error / true_se
+  ) |>
+  select(decade, sample_mean, pop_mean, mean_error,
+         sample_sd, pop_sd, sd_ratio, standard_error, true_se, se_ratio) |>
+  group_by(decade) |>
+  summarize(across(everything(), first))
+
+comparison
+```
+
+*Sampling Distribution*
+
+```{r}
+# Step 8
+# Sampling Distribution
+
+library(infer)
+
+sampling_distribution <- f |>
+  group_by(decade) |>
+  rep_sample_n(size = 100,
+               replace = TRUE,
+               reps = 1000,
+               ) |>
+  group_by(decade, replicate) |>
+  summarize(
+    sample_mean = mean(runtimeMinutes),
+    sample_sd = sd(runtimeMinutes),
+    .groups = "drop"
+  )
+
+head(sampling_distribution)
+
+# Step 9
+# Sampling Distribution by Decade
+
+sampling_dist_means <- sampling_distribution |>
+  group_by(decade) |>
+  summarize(
+    mean_of_means = mean(sample_mean),
+    sd_of_means = sd(sample_mean)
+  )
+
+full_comparison <- pop_param |>
+  left_join(sampling_dist_means, by = 'decade') |>
+  mutate(
+    theoretical_SE = pop_sd / 10,
+    SE_comparison = sd_of_means - theoretical_SE
+  ) |> group_by(decade) |>
+  summarize(across(everything(), first))
+
+full_comparison
+
+ggplot(sampling_distribution, aes(x = sample_mean)) +
+  geom_histogram(aes(y = after_stat(density)),
+                 binwidth = 1,
+                 fill = "skyblue",
+                 color = "white") +
+  geom_density(linewidth = 0.7, color = "navy") +
+  geom_vline(data = pop_param,
+             aes(xintercept = pop_mean),
+             color = "red", linewidth = 1, linetype = "dashed") +
+  facet_wrap(~decade, nrow = 2) +
+  labs(title = "Sampling Distribution of Mean Runtime by Decade",
+       subtitle = "x-int ~ population mean",
+       x = "Sample Mean Runtime (minutes)",
+       y = "Density") +
+  theme_minimal()
+  
+# Step 10
+# Comparison of Standard Error
+
+sample_comparison <- decade_stats |>
+  select(decade, sample_se = standard_error) |>
+  left_join(pop_param |> select(decade, population_se = true_se),
+            by = "decade") |>
+  left_join(sampling_dist_means |> select(decade, sampling_dist_se = sd_of_means),
+            by = "decade") |>
+  mutate(
+    sample_vs_pop = sample_se - population_se,
+    sample_vs_sampling = sample_se - sampling_dist_se,
+    pop_vs_sampling = population_se - sampling_dist_se
+  )  |> group_by(decade) |>
+  summarize(across(everything(), first))
+
+sample_comparison
+```
+
+### Challenge 2
+
+```{r}
+# Step 1
+# Load in the zombie data
+
+z <- read_csv("https://raw.githubusercontent.com/difiore/ada-datasets/main/zombies.csv")
+z <- tibble(z)
+View(z)
+
+# Step 2
+# Defining the population parameters for each quantitative RV
+
+population_params <- z |>
+  summarize(across(c(height, weight, age, zombies_killed, years_of_education),
+                   list(
+                     pop_mean = ~sum(.)/n(),
+                     pop_sd = ~sqrt(sum((. -mean(.))^2)/n())
+                   ))) |>
+  pivot_longer(everything(),
+               names_to = c("variable", ".value"),
+               names_sep = "_pop_") |>
+  arrange(variable)
+
+population_params
+
+```
+
+```{r}
+# Step 3
+# {ggplot2} boxplots
+
+z |> pivot_longer(cols = c(height, weight, age, zombies_killed, years_of_education),
+                  names_to = "variable",
+                  values_to = "value") |>
+  ggplot(aes(x = gender, y = value, fill = gender)) +
+  geom_boxplot() +
+  scale_fill_manual(values = c("Female" = "red", "Male" = "lightblue")) +
+  facet_wrap(~ variable, scales = "free_y", ncol = 3) +
+  labs(title = "Distributions of Quantitative Variables by Gender",
+       x = "Gender",
+       y = "Value") +
+  theme_minimal() +
+  theme(legend.position = "none",
+        strip.text = element_text(face = "bold"))
+  
+
+# Step 4
+# {ggplot2} scatterplots
+
+height_plot <- ggplot(data = z, aes(x = age, y = height, color = gender)) +
+  geom_point(alpha = 0.6, size = 2) +
+  geom_smooth(method = 'lm', se = FALSE) +
+  scale_color_manual(values = c("Female" = "purple", "Male" = "gold")) +
+  labs(title = "Height vs. Age by Gender",
+       x = "Age (years)",
+       y = "Height (inches)") +
+  theme_minimal()
+
+height_plot
+
+weight_plot <- ggplot(data = z, aes(x = age, y = weight, color = gender)) +
+  geom_point(alpha = 0.6, size = 2) +
+  geom_smooth(method = 'lm', se = FALSE) +
+  scale_color_manual(values = c("Female" = "purple", "Male" = "gold")) +
+  labs(title = "Weight vs. Age by Gender",
+       x = "Age (years)",
+       y = "Weight (lbs)") +
+  theme_minimal()
+
+weight_plot
+
+```
+
+```{r}
+# Step 5
+# Histograms and Q-Q plots
+
+library(patchwork)
+
+plot_normality <- function(data, var) {
+  # Histogram
+  p1 <- ggplot(data, aes(x = .data[[var]])) +
+    geom_histogram(aes(y = after_stat(density)),
+                   bins = 30, 
+                   fill = "skyblue",
+                   color = "white") +
+    geom_density(linewidth = 1, color = "navy") +
+    ggtitle(paste("Histogram of", var)) +
+    theme_minimal()
+  
+  ## Q-Q Plot
+  p2 <- ggplot(data, aes(sample = .data[[var]])) +
+    stat_qq(color = "steelblue") +
+    stat_qq_line(color = "red", linewidth = 1) +
+    ggtitle(paste("Q-Q Plot of", var)) +
+    theme_minimal()
+  
+  p1 + p2
+}
+
+vars <- c("height", "weight", "age", "zombies_killed", "years_of_education")
+normality_plots <- map(vars, ~plot_normality(z, .x))
+
+wrap_plots(normality_plots, ncol = 2)
+
+shapiro_results <- z %>%
+  summarize(across(all_of(vars), ~ shapiro.test(.)$p.value))
+shapiro_results
+```
+
+**Analysis of Normality:**
+
+The histograms for *height*, *age*, and *weight* follow a **normal** distribution (with *weight* and *age* having a slight right-skew. These variables normality is supported by the very strong linearity of their associated Q-Q plots. The *years_of_education* and *zombies_killed* appear **gamma** distributed with a more exponential behavior. At the very least, they are clearly **not normal**
+
+```{r}
+# Step 6
+# Sampling for CI
+
+set.seed(123)
+sample_data <- z |>
+  slice_sample(n = 50, replace = FALSE)
+
+sample_data
+
+sample_results <- sample_data |>
+  summarize(across(c(height, weight, age, zombies_killed, years_of_education),
+                   list(
+                     mean = ~ mean(.x),
+                     sd = ~ sd(.x)
+                   ))) |>
+  pivot_longer(
+    cols = everything(),
+    names_to = c("variable", ".value"),
+    names_pattern = "(.*)_(mean|sd)"
+  ) |> mutate(
+    n = 50,
+    se = sd / sqrt(n),
+    t_critical = qt(0.975, df = n - 1),
+    lower_ci = mean - t_critical * se,
+    upper_ci = mean + t_critical * se
+  )
+
+sample_results
+
+
+```
+
+```{r}
+# Step 7
+# Re-sampling for Sample Distribution
+
+sample_data_200 <- z |>
+  rep_sample_n(size = 50, replace = FALSE, reps = 200)
+
+View(sample_data_200)
+
+sample_results_200 <- sample_data |>
+  group_by(replicate) |>
+  summarize(across(c(height, weight, age, zombies_killed, years_of_education),
+                   list(
+                     mean = ~ mean(.x),
+                     sd = ~ sd(.x)
+                   ))) |>
+  pivot_longer(
+    cols = everything(),
+    names_to = c("variable", ".value"),
+    names_pattern = "(.*)_(mean|sd)"
+  ) |> mutate(
+    n = 50,
+    se = sd / sqrt(n),
+    t_critical = qt(0.975, df = n - 1),
+    lower_ci = mean - t_critical * se,
+    upper_ci = mean + t_critical * se
+  )
+
+View(sample_results_200)
+
+ first_sample_se <- sample_result |>
+  select(variable, first_sample_se = se)
+
+final_comparison <- sampling_stats |>
+  left_join(first_sample_se, by = "variable") |>
+  mutate(
+    difference = sampling_dist_sd - first_sample_se,
+    ratio = sampling_dist_sd / first_sample_se
+  )
+
+final_comparison
+```
+
+```{r}
+# Step 8
+# Sampling Distribution of Means
+
+samp_plot |> pivot_longer(cols = c(height, weight, age, zombies_killed, years_of_education),
+                  names_to = "variable",
+                  values_to = "value") |>
+  ggplot(aes(x = gender, y = value, fill = gender)) +
+  geom_boxplot() +
+  scale_fill_manual(values = c("Female" = "red", "Male" = "lightblue")) +
+  facet_wrap(~ variable, scales = "free_y", ncol = 3) +
+  labs(title = "Sampling Distributions of Quantitative Variable Means",
+       x = "Gender",
+       y = "Value") +
+  theme_minimal() +
+  theme(legend.position = "none",
+        strip.text = element_text(face = "bold"))
+
+# Step 9
+# Confidence Intervals of Sampling Distribution
+
+
+```
+
+```{r}
+# Step 10
+# Bootstrapping of Re-sampled Confidence Interval
+
+
+
+```
